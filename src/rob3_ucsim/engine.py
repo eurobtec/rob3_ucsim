@@ -52,13 +52,21 @@ def find_ucsim() -> str:
 
 
 def default_hex() -> str | None:
-    """The ROB3 ROM path. Honours the ``ROB3_HEX`` env var; otherwise returns
-    ``None`` (no ROM is loaded — set ``ROB3_HEX`` or pass ``hex_path``).
+    """The ROB3 ROM path. Resolution order:
 
-    The firmware repo's ROM is ``firmware/hex/M2764A@DIP28.HEX``; point
-    ``ROB3_HEX`` at it (the ``@`` is handled by pyucsim's ``safe_image``)."""
+    1. the ``ROB3_HEX`` env var (any image — the override), else
+    2. the standard sibling checkout
+       ``$HOME/github/eurobtec/rob3/firmware/legacy/hex/M2764A@DIP28.HEX``
+       (so a normal checkout needs neither ``ROB3_HEX`` nor ``--hex``), else
+    3. ``None`` (pass ``hex_path``/``--hex``).
+
+    The ``@`` in the filename is handled by pyucsim's ``safe_image``."""
     env = os.environ.get("ROB3_HEX")
-    return os.path.expanduser(env) if env else None
+    if env:
+        return os.path.expanduser(env)
+    cand = os.path.expanduser(
+        "~/github/eurobtec/rob3/firmware/legacy/hex/M2764A@DIP28.HEX")
+    return cand if os.path.exists(cand) else None
 
 
 class UCSimEngine(_BaseEngine):
