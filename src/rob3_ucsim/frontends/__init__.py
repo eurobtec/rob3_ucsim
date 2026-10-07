@@ -143,6 +143,7 @@ def run(backend: str = "text", *, hex_path: str | None = None, hz: float = 20.0,
     """
     import queue
     import sys
+    import os
 
     from .. import UCSimEngine, default_hex, find_ucsim, MAIN_LOOP
     from ..inputs.teachbox import TeachboxDriver
@@ -159,10 +160,21 @@ def run(backend: str = "text", *, hex_path: str | None = None, hz: float = 20.0,
     try:
         eng.reset(fixed_baud=False)
         eng.command("set mem sfr 0xb0 0x00")   # de-assert emergency-off (P3.2)
+        # Startup status so you can see WHAT loaded and whether it is live.
+        print("ROB3 ucSim viewer", file=sys.stderr)
+        print(f"  ucSim  : {getattr(eng, 'binary', '?')}", file=sys.stderr)
+        print(f"  ROM    : {rom}", file=sys.stderr)
+        modnames = ", ".join(os.path.basename(m) for m in mods) or "(none)"
+        print(f"  cl_hw  : {modnames}", file=sys.stderr)
+        print(f"  servo  : {'LIVE (modules loaded)' if eng.has_modules else 'STATIC — set ROB3_MODS to move'}",
+              file=sys.stderr)
         if not eng.has_modules:
-            print("WARNING: cl_hw modules not loaded — the firmware will not run "
-                  "its servo and the arm will not move. Build them "
-                  "(simulator/ucsim-modules) or set ROB3_MODS.", file=sys.stderr)
+            print("WARNING: cl_hw modules did not load — the firmware servo will "
+                  "not run and the arm will not move. Most likely the ucSim binary "
+                  "can't load plugins: point UCSIM_51 at the loader-enabled "
+                  "ucsim_51 (not stock s51). Modules tried: " + (modnames) +
+                  (". None found — set ROB3_MODS." if not mods else "."),
+                  file=sys.stderr)
         else:
             eng.run_to(MAIN_LOOP)
         drv = TeachboxDriver(eng)
