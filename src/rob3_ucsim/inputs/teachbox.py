@@ -116,14 +116,21 @@ class TeachboxDriver:
 
 # --- intent protocol (viewer <- keyboard-teachbox) ---------------------------
 def key_to_intent(ch: str) -> str | None:
-    """Map a keyboard char to an intent line, or None."""
-    k = ch.upper() if ch.upper() in KEYMAP else ch
-    if k not in KEYMAP:
-        return None
-    if k in ("+", "-"):
-        return "jog +" if k == "+" else "jog -"
-    _, row, group = KEYMAP[k]
-    return f"press {row} {group}"
+    """Map a keyboard char to an intent line, or None.
+
+    Keyboard digits 1..6 select axis 0..5 (the firmware's axis-select =
+    group 1 rows 1..6; TeachboxDriver.axis(n) issues the verified `press n+1 1`).
+    +/- jog the selected axis.
+    """
+    if ch in ("+", "-"):
+        return "jog +" if ch == "+" else "jog -"
+    if ch in ("1", "2", "3", "4", "5", "6"):
+        return f"axis {int(ch) - 1}"       # key 1->axis 0 .. key 6->axis 5
+    k = ch.upper()
+    if k in KEYMAP and k not in ("0","1","2","3","4","5","6","7","8","9","+","-"):
+        _, row, group = KEYMAP[k]
+        return f"press {row} {group}"
+    return None
 
 
 # --- own-engine mode ---------------------------------------------------------
@@ -169,7 +176,7 @@ def _read_key():
 
 def _keyloop(send, *, raw=True):
     """Read keys and call send(intent_line) for each."""
-    print("keyboard-teachbox: 0-9 (axis), + - (jog), P E N I O D C R, 'q' quit")
+    print("keyboard-teachbox: 1-6 select axis 0-5, + - jog, 'q' quit")
     while True:
         if raw and sys.stdin.isatty():
             ch = _read_key()
