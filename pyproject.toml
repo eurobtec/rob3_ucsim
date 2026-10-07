@@ -27,6 +27,11 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest>=7.0"]
+viz = ["pybullet>=3.2"]
+
+[project.scripts]
+rob3-viz = "rob3_ucsim.frontends:main"
+rob3-teachbox = "rob3_ucsim.inputs.teachbox:main"
 
 [project.urls]
 Homepage = "https://github.com/eurobtec/rob3_ucsim"
@@ -36,6 +41,9 @@ Homepage = "https://github.com/eurobtec/rob3_ucsim"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+rob3_ucsim = ["urdf/*.urdf", "urdf/*.xacro", "urdf/meshes/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
