@@ -59,7 +59,10 @@ def _default_modules() -> list[str]:
                 break
     mods = []
     if base:
-        for name in ("adc/adc.so", "loopback/loopback.so"):
+        # adc + loopback: firmware reaches its servo loop. teachbox: so a
+        # keyboard-teachbox attached over --console-port can drive the keypad on
+        # this (shared) ucSim.
+        for name in ("adc/adc.so", "loopback/loopback.so", "teachbox/teachbox.so"):
             p = os.path.join(base, name)
             if os.path.exists(p):
                 mods.append(p)
@@ -80,32 +83,108 @@ def run(backend: str = "text", *, hex_path: str | None = None, hz: float = 20.0,
     """
     from .. import UCSimEngine, default_hex, find_ucsim, MAIN_LOOP
 
+def _start_intent_server(port: int, q):
+    """Accept intent-line connections on localhost:port; push lines into queue q.
+
+    The viewer (sole ucSim owner) runs this; input drivers (keyboard-teachbox,
+    future host-RS232) connect and send intent lines. One stepper, many intent
+    producers — see the rob3-firmware-sim skill.
+    """
+    import socket
+    import threading
+
+    srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    srv.bind(("127.0.0.1", port))
+    srv.listen(4)
+
+    def serve():
+        while True:
+            try:
+                conn, _ = srv.accept()
+            except OSError:
+                return
+            threading.Thread(target=_client, args=(conn,), daemon=True).start()
+
+    def _client(conn):
+        buf = b""
+        with conn:
+            while True:
+                try:
+                    data = conn.recv(256)
+                except OSError:
+                    return
+                if not data:
+                    return
+                buf += data
+                while b"\n" in buf:
+                    line, buf = buf.split(b"\n", 1)
+                    q.put(line.decode(errors="ignore").strip())
+
+    threading.Thread(target=serve, daemon=True).start()
+    return srv
+
+
+def run(backend: str = "text", *, hex_path: str | None = None, hz: float = 20.0,
+        cycles_per_frame: int = 20000, gui: bool = True,
+        intent_port: int | None = None) -> None:
+    """Boot the ROB3 ROM in ucSim, free-run it, and render live via ``backend``.
+
+    Needs the ROM (``ROB3_HEX`` or ``hex_path``) and a ucSim binary (``UCSIM_51``).
+    Loads the adc + loopback + teachbox cl_hw modules (``ROB3_MODS`` to override)
+    so the firmware runs its servo and the keypad is drivable.
+
+    This process is the SOLE ucSim owner + stepper. If ``intent_port`` is set, it
+    opens an intent socket: input drivers (``rob3-teachbox --intent-port N``, or a
+    future host-RS232 driver) connect and send intent lines (``press R G`` /
+    ``axis N`` / ``jog +``); the loop applies each via the verified cadence
+    between frames, then renders. (pyucsim is single-owner — never add a second
+    engine/console. See the rob3-firmware-sim skill.)
+    """
+    import queue
+    import sys
+
+    from .. import UCSimEngine, default_hex, find_ucsim, MAIN_LOOP
+    from ..inputs.teachbox import TeachboxDriver
+
     rom = hex_path or default_hex()
     if not rom:
         raise SystemExit("set ROB3_HEX=/path/to/rom.hex (or pass --hex)")
 
     mods = _default_modules()
     viewer = make_viewer(backend, gui=gui)
-    eng = UCSimEngine(hex_path=rom, binary=find_ucsim(), console_port=console_port,
-                      load_hw=mods or None)
+    eng = UCSimEngine(hex_path=rom, binary=find_ucsim(), load_hw=mods or None)
+    intents: "queue.Queue[str]" = queue.Queue()
+    srv = None
     try:
         eng.reset(fixed_baud=False)
+        eng.command("set mem sfr 0xb0 0x00")   # de-assert emergency-off (P3.2)
         if not eng.has_modules:
-            import sys
-            print("WARNING: adc/loopback cl_hw modules not loaded — the firmware "
-                  "will not run its servo and the arm will not move. Build them "
+            print("WARNING: cl_hw modules not loaded — the firmware will not run "
+                  "its servo and the arm will not move. Build them "
                   "(simulator/ucsim-modules) or set ROB3_MODS.", file=sys.stderr)
-        # Free-run drives the ADC servo loop; read_positions() reflects the live
-        # pot state. Motion appears when something drives the firmware (a
-        # keyboard-teachbox over --console-port, serial, or a stored program).
+        else:
+            eng.run_to(MAIN_LOOP)
+        drv = TeachboxDriver(eng)
+        if intent_port:
+            srv = _start_intent_server(intent_port, intents)
+            print(f"intent socket: localhost:{intent_port}  "
+                  f"(attach: rob3-teachbox --intent-port {intent_port})",
+                  file=sys.stderr)
         period = 1.0 / hz
         while True:
+            # Apply any queued input intents using the verified cadence (we are
+            # the single stepper), then advance the servo and render.
+            while not intents.empty():
+                drv.apply_intent(intents.get_nowait())
             eng.run_cycles(cycles_per_frame)
             viewer.set_positions(eng.read_positions())
             time.sleep(period)
     except KeyboardInterrupt:
         pass
     finally:
+        if srv is not None:
+            srv.close()
         eng.close()
         viewer.close()
 
@@ -121,14 +200,15 @@ def main() -> int:
     ap.add_argument("--hz", type=float, default=20.0, help="frame rate (default 20)")
     ap.add_argument("--cycles", type=int, default=20000,
                     help="ucSim cycles advanced per frame (default 20000)")
-    ap.add_argument("--console-port", type=int, default=None,
-                    help="expose the ucSim console on localhost:PORT so a "
-                         "keyboard-teachbox can attach and drive the firmware")
+    ap.add_argument("--intent-port", type=int, default=None,
+                    help="open an intent socket on localhost:PORT so an input "
+                         "driver (rob3-teachbox --intent-port PORT) can drive the "
+                         "firmware while this viewer renders")
     ap.add_argument("--headless", action="store_true",
                     help="pybullet DIRECT mode (no window)")
     args = ap.parse_args()
     run(args.backend, hex_path=args.hex, hz=args.hz, cycles_per_frame=args.cycles,
-        gui=not args.headless, console_port=args.console_port)
+        gui=not args.headless, intent_port=args.intent_port)
     return 0
 
 

@@ -4,21 +4,20 @@ An INPUT driver (separate from the viewers): it injects teachbox keypad events
 into the running firmware so the arm moves; watch the motion in a viewer
 (``rob3-viz``). Two modes:
 
-* **own-engine** — boots its own ucSim and drives it directly (``eng.press``).
-* **attach** (``--console-port N``) — connects to a *running* ucSim's command
-  console (opened by ``rob3-viz --console-port N``) and injects keypresses via
-  ``set hardware teachbox <row> <group>`` over that socket, so one sim is shared
-  between the viewer and this driver.
+* **own-engine** — boots its own ucSim and drives it directly with the verified
+  debounce cadence (axis-select) + ``kh_jog`` (jog).
+* **attach** (``--intent-port N``) — connects to a *running* viewer's INTENT
+  socket (opened by ``rob3-viz --intent-port N``) and sends press/jog *intents*.
+  The viewer owns the single ucSim stepping loop and applies each intent with the
+  verified cadence, then renders — so one sim is shared and jog works live while
+  you watch. (There is only ONE stepper: the viewer. The teachbox sends intents.)
 
-Keys (verified ROB3 keypad row/group, from hardware/teachbox/test.md):
+Keys (verified ROB3 keypad row/group, from the rob3-firmware-sim skill):
 
-    0-9   numeric (POSITION mode: 2..7 select axis 0..5)
+    0-9   numeric (POSITION mode: keys 2..7 select axis 0..5)
     + -   jog selected axis up / down
-    P     POS    E ENT    N NOP    I INS    O OUT    D DEL    C ERR    R RUN
+    P POS   E ENT   N NOP   I INS   O OUT   D DEL   C ERR   R RUN
     q     quit
-
-Raw single-key mode (default on a TTY): press a key and it fires immediately —
-good for live jogging next to a 3D viewer.
 """
 
 from __future__ import annotations
@@ -27,8 +26,8 @@ import socket
 import sys
 import time
 
-#: char -> (label, row, group). group 1/2/3 = P1.5/6/7; row = 74LS138 /Y0../Y7.
-#: Verified key->(row,group) (mirrors the GUI/CLI KEYMAP).
+#: char -> (label, row, group). group 1/2/3 = P1.5/6/7; index = row+1+(group-1)*8.
+#: Axis-select = group 1 rows 1..6 -> axis 0..5 (rob3-firmware-sim skill).
 KEYMAP = {
     "0": ("0", 0, 2), "1": ("1", 1, 2), "2": ("2", 2, 2), "3": ("3", 3, 2),
     "4": ("4", 4, 2), "5": ("5", 5, 2), "6": ("6", 6, 2), "7": ("7", 7, 2),
@@ -39,65 +38,35 @@ KEYMAP = {
     "I": ("INS", 0, 3), "O": ("OUT", 1, 3),
 }
 
-PRESS_CYCLES = 8000   # interactive ucSim budget per keypress
 
+class TeachboxDriver:
+    """Drive a ROB3 firmware keypad on a ucSim engine (the single stepper owns
+    the engine and calls these). Verified against the ROM:
 
-class _OwnEngineSink:
-    """Drive a ucSim engine this process owns, using the VERIFIED teachbox
-    bring-up: load loopback+teachbox+adc, reach the main-loop keypad poll, then
-    dispatch keys via the release→hold→release debounce cadence (the same
-    sequence the vetted test_teachbox_axis_select.py uses).
-
-    Axis-select (keys 0..5) is [SIM]-verified end-to-end through the scanner.
-    Jog (+/-) uses the firmware's verified kh_jog routine on the selected axis
-    (the key→jog scanner path is not yet black-box-mapped, so we invoke the
-    verified jog directly — same net effect: the selected axis's 0x50+N moves).
+    * axis-select via the release->hold->release debounce cadence (sets POSITION
+      mode 0x29=0x40), per the rob3-firmware-sim skill.
+    * jog via the firmware's verified kh_jog (0x0E26) on the selected axis.
     """
 
-    JOG = 0x0E26          # kh_jog entry
-    KBD_HANDLE = 0x0C80   # key dispatch
-    POS_SLOT = 0x50       # per-axis position base
+    JOG = 0x0E26
+    KBD_HANDLE = 0x0C80
+    POS_SLOT = 0x50
 
-    def __init__(self, hex_path=None, console_port=None):
-        import os
-        from rob3_ucsim import UCSimEngine, default_hex, find_ucsim, MAIN_LOOP
-        rom = hex_path or default_hex()
-        if not rom:
-            raise SystemExit("set ROB3_HEX=/path/to/rom.hex (or pass --hex)")
-        base = os.environ.get("ROB3_MODS")
-        if not base:
-            here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-            for c in (os.path.join(here, "..", "..", "simulator", "ucsim-modules"),
-                      os.path.expanduser("~/github/eurobtec/rob3_ucsim/simulator/ucsim-modules")):
-                if os.path.isdir(c):
-                    base = c
-                    break
-        mods = []
-        if base:
-            for name in ("loopback", "teachbox", "adc"):
-                p = os.path.join(base, name, f"{name}.so")
-                if os.path.exists(p):
-                    mods.append(p)
-        self.eng = UCSimEngine(hex_path=rom, binary=find_ucsim(),
-                               console_port=console_port, load_hw=mods or None)
-        self.eng.reset(fixed_baud=False)
-        self.eng.command("set mem sfr 0xb0 0x00")   # de-assert emergency-off (P3.2)
-        self._main = MAIN_LOOP
-        self._live = self.eng.has_modules
-        if not self._live:
-            print("WARNING: teachbox/adc cl_hw not loaded — keypresses will not "
-                  "reach the firmware. Build them / set ROB3_MODS.", file=sys.stderr)
-        else:
-            self.eng.run_to(MAIN_LOOP)
+    def __init__(self, eng):
+        self.eng = eng
         self.selected = None
 
     def _settle(self, n):
         for _ in range(n):
             self.eng.run_cycles(8000)
 
-    def _tap(self, row, group, hold=6):
-        """Release→press→(step to kbd_handle)→hold→release — the debounce cadence."""
-        self.eng.release(); self._settle(3)
+    def press(self, row, group):
+        """Dispatch one keypad key via the verified debounce cadence."""
+        if group not in (1, 2, 3):
+            return
+        if group == 1 and 1 <= row <= 6:          # axis-select
+            self.selected = row - 1
+        self.eng.release(); self._settle(3)        # release sets flag 0x20.6
         self.eng.press(row, group)
         self.eng.command("break 0x%04x" % self.KBD_HANDLE)
         for _ in range(30):
@@ -106,60 +75,86 @@ class _OwnEngineSink:
                ("0x%06x" % self.KBD_HANDLE) in out.lower():
                 break
         self.eng.command("clear 0x%04x" % self.KBD_HANDLE)
-        self._settle(hold)
+        self._settle(6)
         self.eng.release(); self._settle(2)
 
-    def press(self, row, group):
-        if not self._live or group not in (1, 2, 3):
-            return
-        # index = row + 1 + (group-1)*8; axis-select is index 0x02..0x07
-        # (group 1, rows 1..6) -> axis 0..5.
-        if group == 1 and 1 <= row <= 6:
-            self.selected = row - 1
-        self._tap(row, group)
+    def axis(self, n):
+        """Select axis n (0..5) = group 1, row n+1."""
+        self.press(n + 1, 1)
 
-    def jog(self, direction: int) -> None:
-        """Jog the selected axis via the verified kh_jog routine (ACC.0: 0=+,1=-)."""
-        if not self._live or self.selected is None:
+    def jog(self, direction):
+        """Jog the selected axis via kh_jog (ACC.0: 0=+ increment, 1=- decrement)."""
+        if self.selected is None:
             return
-        self.eng.command("set mem sfr 0xd0 0x00")                 # PSW bank 0
+        self.eng.command("set mem sfr 0xd0 0x00")
         self.eng.command("set mem sfr 0xe0 0x%02x" % (direction & 1))
-        self.eng.command("set mem iram 0x29 0x40")                # POSITION mode
-        self.eng.command("set mem iram 0x01 0x%02x" % (self.POS_SLOT + self.selected))  # R1
+        self.eng.command("set mem iram 0x29 0x40")
+        self.eng.command("set mem iram 0x01 0x%02x" % (self.POS_SLOT + self.selected))
         self.eng.command("pc 0x%04x" % self.JOG)
-        self.eng.command("break 0x0e40"); self.eng.command("break 0x0e2f")
-        self.eng.command("break 0x0e36"); self.eng.run(timeout=10)
-        self.eng.command("clear 0x0e40"); self.eng.command("clear 0x0e2f")
-        self.eng.command("clear 0x0e36")
+        for bp in ("0x0e40", "0x0e2f", "0x0e36"):
+            self.eng.command("break %s" % bp)
+        self.eng.run(timeout=10)
+        for bp in ("0x0e40", "0x0e2f", "0x0e36"):
+            self.eng.command("clear %s" % bp)
 
-    def close(self):
-        self.eng.close()
-
-
-class _ConsoleSink:
-    """Inject keypresses into a *running* ucSim via its command-console socket."""
-
-    def __init__(self, host: str, port: int):
-        self.sock = socket.create_connection((host, port), timeout=5.0)
-
-    def _send(self, line: str):
-        self.sock.sendall((line + "\n").encode())
-        time.sleep(0.02)
-
-    def press(self, row, group):
-        if group in (1, 2, 3):
-            self._send(f"set hardware teachbox {row} {group}")
-            self._send("set hardware teachbox 0")   # release
-
-    def close(self):
+    def apply_intent(self, line: str) -> None:
+        """Apply one intent line: 'press R G' | 'axis N' | 'jog +|-'."""
+        parts = line.split()
+        if not parts:
+            return
+        cmd = parts[0]
         try:
-            self.sock.close()
-        except Exception:
+            if cmd == "press" and len(parts) == 3:
+                self.press(int(parts[1]), int(parts[2]))
+            elif cmd == "axis" and len(parts) == 2:
+                self.axis(int(parts[1]))
+            elif cmd == "jog" and len(parts) == 2:
+                self.jog(0 if parts[1] == "+" else 1)
+        except ValueError:
             pass
 
 
+# --- intent protocol (viewer <- keyboard-teachbox) ---------------------------
+def key_to_intent(ch: str) -> str | None:
+    """Map a keyboard char to an intent line, or None."""
+    k = ch.upper() if ch.upper() in KEYMAP else ch
+    if k not in KEYMAP:
+        return None
+    if k in ("+", "-"):
+        return "jog +" if k == "+" else "jog -"
+    _, row, group = KEYMAP[k]
+    return f"press {row} {group}"
+
+
+# --- own-engine mode ---------------------------------------------------------
+def _own_engine_driver(hex_path=None):
+    import os
+    from rob3_ucsim import UCSimEngine, default_hex, find_ucsim, MAIN_LOOP
+    rom = hex_path or default_hex()
+    if not rom:
+        raise SystemExit("set ROB3_HEX=/path/to/rom.hex (or pass --hex)")
+    base = os.environ.get("ROB3_MODS")
+    if not base:
+        here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        for c in (os.path.join(here, "..", "..", "simulator", "ucsim-modules"),
+                  os.path.expanduser("~/github/eurobtec/rob3_ucsim/simulator/ucsim-modules")):
+            if os.path.isdir(c):
+                base = c
+                break
+    mods = [os.path.join(base, n, f"{n}.so") for n in ("loopback", "teachbox", "adc")
+            if base and os.path.exists(os.path.join(base, n, f"{n}.so"))]
+    eng = UCSimEngine(hex_path=rom, binary=find_ucsim(), load_hw=mods or None)
+    eng.reset(fixed_baud=False)
+    eng.command("set mem sfr 0xb0 0x00")
+    if not eng.has_modules:
+        print("WARNING: teachbox/adc cl_hw not loaded — keypresses will not reach "
+              "the firmware. Build them / set ROB3_MODS.", file=sys.stderr)
+    else:
+        eng.run_to(MAIN_LOOP)
+    return eng, TeachboxDriver(eng)
+
+
 def _read_key():
-    """Read one keypress raw (no Enter). Returns '' on EOF."""
     import termios
     import tty
     fd = sys.stdin.fileno()
@@ -172,8 +167,9 @@ def _read_key():
     return ch
 
 
-def run(sink, *, raw: bool = True) -> None:
-    print("keyboard-teachbox: keys 0-9 + - P E N I O D C R, 'q' to quit")
+def _keyloop(send, *, raw=True):
+    """Read keys and call send(intent_line) for each."""
+    print("keyboard-teachbox: 0-9 (axis), + - (jog), P E N I O D C R, 'q' quit")
     while True:
         if raw and sys.stdin.isatty():
             ch = _read_key()
@@ -182,42 +178,45 @@ def run(sink, *, raw: bool = True) -> None:
             if not line:
                 break
             ch = line.strip()[:1]
-        if not ch or ch in ("q", "\x03", "\x04"):   # q / Ctrl-C / Ctrl-D
+        if not ch or ch in ("q", "\x03", "\x04"):
             break
-        k = ch.upper() if ch.upper() in KEYMAP else ch
-        if k not in KEYMAP:
-            continue
-        label, row, group = KEYMAP[k]
-        if k in ("+", "-") and hasattr(sink, "jog"):
-            sink.jog(0 if k == "+" else 1)      # ACC.0: 0=+ (increment), 1=- (decrement)
-            print(f"  jog {label}")
-        else:
-            sink.press(row, group)
-            print(f"  {label} (row={row} group={group})")
+        intent = key_to_intent(ch)
+        if intent:
+            send(intent)
+            print(f"  -> {intent}")
 
 
 def main() -> int:
     import argparse
 
     ap = argparse.ArgumentParser(description="Keyboard-teachbox: drive the ROB3 firmware keypad")
-    ap.add_argument("--console-port", type=int, default=None,
-                    help="attach to a running ucSim console on localhost:PORT "
-                         "(opened by `rob3-viz --console-port PORT`)")
-    ap.add_argument("--host", default="localhost", help="console host (attach mode)")
+    ap.add_argument("--intent-port", type=int, default=None,
+                    help="attach to a running viewer's intent socket on "
+                         "localhost:PORT (opened by `rob3-viz --intent-port PORT`)")
+    ap.add_argument("--host", default="localhost", help="intent host (attach mode)")
     ap.add_argument("--hex", default=None, help="ROM image for own-engine mode (default $ROB3_HEX)")
-    ap.add_argument("--line", action="store_true", help="line mode (type keys + Enter) instead of raw")
+    ap.add_argument("--line", action="store_true", help="line mode (type keys + Enter)")
     args = ap.parse_args()
 
-    if args.console_port:
-        sink = _ConsoleSink(args.host, args.console_port)
+    if args.intent_port:
+        sock = socket.create_connection((args.host, args.intent_port), timeout=5.0)
+
+        def send(intent):
+            sock.sendall((intent + "\n").encode())
+        try:
+            _keyloop(send, raw=not args.line)
+        except KeyboardInterrupt:
+            pass
+        finally:
+            sock.close()
     else:
-        sink = _OwnEngineSink(hex_path=args.hex)
-    try:
-        run(sink, raw=not args.line)
-    except KeyboardInterrupt:
-        pass
-    finally:
-        sink.close()
+        eng, drv = _own_engine_driver(hex_path=args.hex)
+        try:
+            _keyloop(lambda intent: drv.apply_intent(intent), raw=not args.line)
+        except KeyboardInterrupt:
+            pass
+        finally:
+            eng.close()
     return 0
 
 
