@@ -37,11 +37,20 @@ MAIN_LOOP = 0x074D
 
 
 def find_ucsim() -> str:
-    """Return a ucSim binary path. Prefer ``UCSIM_51`` / a ``ucsim_51`` with the
-    cl_hw modules; fall back to stock ``s51``."""
+    """Return a ucSim binary path. Resolution order:
+
+    1. ``UCSIM_51`` env (the override), else
+    2. the standard sibling checkout
+       ``$HOME/github/eurobtec/ucsim/src/sims/s51.src/ucsim_51`` (the
+       plugin-enabled build — preferred over a stock PATH binary that cannot
+       ``loadhw`` the cl_hw modules), else
+    3. ``ucsim_51`` on PATH, else ``s51``.
+    """
     cand = os.environ.get("UCSIM_51")
+    sibling = os.path.expanduser(
+        "~/github/eurobtec/ucsim/src/sims/s51.src/ucsim_51")
     paths = [cand] if cand else []
-    paths += [shutil.which("ucsim_51")]
+    paths += [sibling, shutil.which("ucsim_51")]
     for p in paths:
         if p and os.path.exists(os.path.expanduser(p)) and os.access(os.path.expanduser(p), os.X_OK):
             return os.path.expanduser(p)
