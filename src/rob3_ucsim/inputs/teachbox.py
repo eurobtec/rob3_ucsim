@@ -55,6 +55,7 @@ class TeachboxDriver:
     def __init__(self, eng):
         self.eng = eng
         self.selected = None
+        self.last_action = ""
 
     def _settle(self, n):
         for _ in range(n):
@@ -83,13 +84,27 @@ class TeachboxDriver:
         self.press(n + 1, 1)
 
     def jog(self, direction):
-        """Jog the selected axis via kh_jog (ACC.0: 0=+ increment, 1=- decrement)."""
+        """Jog the selected axis via kh_jog (ACC.0: 0=+ increment, 1=- decrement).
+
+        Set ONLY what kh_jog reads — R1 = 0x50+axis (the position slot) and
+        ACC.0 (direction), with PSW on bank 0 — exactly like demo_teachbox_axis.sh.
+        kh_jog itself clamps 0x00..0xFF.
+
+        LIMITATION [INFER]: kh_jog ends by requesting motion (setb 0x2F, arms the
+        watchdog 0x19) so the servo ISR (0x00C0) then drives the motor toward the
+        new slot. Invoking kh_jog by a bare `pc 0x0E26` jump does not reproduce
+        the full teachbox->servo handoff state, so after several repeated jogs the
+        free-running servo can diverge (observed: axis wraps past the clamp, a
+        neighbouring slot zeroed). A single jog is faithful; sustained multi-step
+        jogging needs the key->jog scanner path reverse-engineered (not yet
+        black-box-mapped — see the rob3-firmware-sim skill). Treat live jog as
+        preview-grade for now.
+        """
         if self.selected is None:
             return
-        self.eng.command("set mem sfr 0xd0 0x00")
-        self.eng.command("set mem sfr 0xe0 0x%02x" % (direction & 1))
-        self.eng.command("set mem iram 0x29 0x40")
-        self.eng.command("set mem iram 0x01 0x%02x" % (self.POS_SLOT + self.selected))
+        self.eng.command("set mem sfr 0xd0 0x00")                       # PSW bank 0
+        self.eng.command("set mem iram 0x01 0x%02x" % (self.POS_SLOT + self.selected))  # R1
+        self.eng.command("set mem sfr 0xe0 0x%02x" % (direction & 1))   # ACC.0 = dir
         self.eng.command("pc 0x%04x" % self.JOG)
         for bp in ("0x0e40", "0x0e2f", "0x0e36"):
             self.eng.command("break %s" % bp)
@@ -97,11 +112,16 @@ class TeachboxDriver:
         for bp in ("0x0e40", "0x0e2f", "0x0e36"):
             self.eng.command("clear %s" % bp)
 
-    def apply_intent(self, line: str) -> None:
-        """Apply one intent line: 'press R G' | 'axis N' | 'jog +|-'."""
+    def apply_intent(self, line: str) -> str:
+        """Apply one intent line: 'press R G' | 'axis N' | 'jog +|-'.
+
+        Returns a human-readable description (incl. the selected axis) for a
+        viewer status line.
+        """
+        from ..axes import AXES
         parts = line.split()
         if not parts:
-            return
+            return ""
         cmd = parts[0]
         try:
             if cmd == "press" and len(parts) == 3:
@@ -111,7 +131,17 @@ class TeachboxDriver:
             elif cmd == "jog" and len(parts) == 2:
                 self.jog(0 if parts[1] == "+" else 1)
         except ValueError:
-            pass
+            return ""
+        axname = (AXES[self.selected].label
+                  if self.selected is not None and 0 <= self.selected < len(AXES)
+                  else "no axis")
+        if cmd == "jog":
+            self.last_action = f"jog {parts[1]}  →  {axname}"
+        elif cmd == "axis":
+            self.last_action = f"select {axname}"
+        else:
+            self.last_action = line
+        return self.last_action
 
 
 # --- intent protocol (viewer <- keyboard-teachbox) ---------------------------

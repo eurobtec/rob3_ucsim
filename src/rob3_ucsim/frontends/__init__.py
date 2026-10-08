@@ -194,7 +194,7 @@ def run(backend: str = "text", *, hex_path: str | None = None, hz: float = 20.0,
                 drv.apply_intent(last_intent)
             eng.run_cycles(cycles_per_frame)
             try:
-                viewer.set_positions(eng.read_positions(), status=last_intent)
+                viewer.set_positions(eng.read_positions(), status=drv.last_action)
             except TypeError:
                 viewer.set_positions(eng.read_positions())   # viewers w/o status
             time.sleep(period)
