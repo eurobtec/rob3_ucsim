@@ -6,8 +6,8 @@ into the running firmware so the arm moves; watch the motion in a viewer
 
 * **own-engine** — boots its own ucSim and drives it directly with the verified
   debounce cadence (axis-select) + ``kh_jog`` (jog).
-* **attach** (``--intent-port N``) — connects to a *running* viewer's INTENT
-  socket (opened by ``rob3-viz --intent-port N``) and sends press/jog *intents*.
+* **attach** (default) — connects to a *running* viewer's intent
+  socket (opened by ``rob3-viz``) and sends press/jog *intents*.
   The viewer owns the single ucSim stepping loop and applies each intent with the
   verified cadence, then renders — so one sim is shared and jog works live while
   you watch. (There is only ONE stepper: the viewer. The teachbox sends intents.)
@@ -195,27 +195,31 @@ def _keyloop(send, *, raw=True):
 
 def main() -> int:
     import argparse
+    from ..axes import DEFAULT_INTENT_PORT
 
     ap = argparse.ArgumentParser(description="Keyboard-teachbox: drive the ROB3 firmware keypad")
-    ap.add_argument("--intent-port", type=int, default=None,
-                    help="attach to a running viewer's intent socket on "
-                         "localhost:PORT (opened by `rob3-viz --intent-port PORT`)")
+    ap.add_argument("--port", type=int, default=DEFAULT_INTENT_PORT,
+                    help=f"viewer port to attach to (default {DEFAULT_INTENT_PORT}; "
+                         "opened by rob3-viz). Ignored with --own-engine.")
+    ap.add_argument("--own-engine", action="store_true",
+                    help="boot a private ucSim and drive it directly (no viewer; "
+                         "standalone keypad testing)")
     ap.add_argument("--host", default="localhost", help="intent host (attach mode)")
     ap.add_argument("--hex", default=None, help="ROM image for own-engine mode (default $ROB3_HEX)")
     ap.add_argument("--line", action="store_true", help="line mode (type keys + Enter)")
     args = ap.parse_args()
 
-    if args.intent_port:
+    if not args.own_engine:
         try:
-            sock = socket.create_connection((args.host, args.intent_port), timeout=5.0)
+            sock = socket.create_connection((args.host, args.port), timeout=5.0)
         except OSError as e:
-            print(f"ERROR: could not connect to viewer intent socket "
-                  f"{args.host}:{args.intent_port} ({e}).\n"
-                  f"       Start the viewer first:  "
-                  f"rob3-viz --backend text --intent-port {args.intent_port}",
+            print(f"ERROR: could not connect to viewer at "
+                  f"{args.host}:{args.port} ({e}).\n"
+                  f"       Start the viewer first:  rob3-viz --backend text\n"
+                  f"       (or run standalone:      rob3-teachbox --own-engine)",
                   file=sys.stderr)
             return 2
-        print(f"connected to viewer at {args.host}:{args.intent_port}  "
+        print(f"connected to viewer at {args.host}:{args.port}  "
               f"(keys drive the firmware; watch the viewer)")
 
         def send(intent):

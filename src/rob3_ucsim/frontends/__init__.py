@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import time
 
+from ..axes import DEFAULT_INTENT_PORT
 from .text_view import TextViewer
 
 #: name -> factory. pybullet is imported lazily so the package works without the
@@ -135,7 +136,7 @@ def run(backend: str = "text", *, hex_path: str | None = None, hz: float = 20.0,
     so the firmware runs its servo and the keypad is drivable.
 
     This process is the SOLE ucSim owner + stepper. If ``intent_port`` is set, it
-    opens an intent socket: input drivers (``rob3-teachbox --intent-port N``, or a
+    opens an intent socket: input drivers (``rob3-teachbox``, or a
     future host-RS232 driver) connect and send intent lines (``press R G`` /
     ``axis N`` / ``jog +``); the loop applies each via the verified cadence
     between frames, then renders. (pyucsim is single-owner — never add a second
@@ -181,7 +182,7 @@ def run(backend: str = "text", *, hex_path: str | None = None, hz: float = 20.0,
         if intent_port:
             srv = _start_intent_server(intent_port, intents)
             print(f"intent socket: localhost:{intent_port}  "
-                  f"(attach: rob3-teachbox --intent-port {intent_port})",
+                  f"(attach: rob3-teachbox)",
                   file=sys.stderr)
         period = 1.0 / hz
         last_intent = ""
@@ -216,15 +217,16 @@ def main() -> int:
     ap.add_argument("--hz", type=float, default=20.0, help="frame rate (default 20)")
     ap.add_argument("--cycles", type=int, default=20000,
                     help="ucSim cycles advanced per frame (default 20000)")
-    ap.add_argument("--intent-port", type=int, default=None,
-                    help="open an intent socket on localhost:PORT so an input "
-                         "driver (rob3-teachbox --intent-port PORT) can drive the "
-                         "firmware while this viewer renders")
+    ap.add_argument("--port", type=int, default=None,
+                    help="intent socket port for input drivers (default "
+                         f"{DEFAULT_INTENT_PORT}; 0 to disable). rob3-teachbox "
+                         "connects here to drive the firmware while this renders")
     ap.add_argument("--headless", action="store_true",
                     help="pybullet DIRECT mode (no window)")
     args = ap.parse_args()
+    port = DEFAULT_INTENT_PORT if args.port is None else args.port
     run(args.backend, hex_path=args.hex, hz=args.hz, cycles_per_frame=args.cycles,
-        gui=not args.headless, intent_port=args.intent_port)
+        gui=not args.headless, intent_port=(port or None))
     return 0
 
 

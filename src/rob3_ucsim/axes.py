@@ -45,6 +45,10 @@ AXES = [
 
 JOINT_NAMES = [a.name for a in AXES]
 
+#: Default TCP port for the viewer<-input intent channel (viewer listens, input
+#: drivers connect). Both sides default to this so no --port is needed.
+DEFAULT_INTENT_PORT = 5577
+
 
 def positions_to_joints(positions) -> list[float]:
     """Map the 6-byte firmware position vector to the 6 joint values."""
