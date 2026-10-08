@@ -29,13 +29,14 @@ class TextViewer:
         self._lines = len(AXES) + 1
         self._primed = False
 
-    def set_positions(self, positions: Sequence[int]) -> None:
-        rows = []
-        rows.append("ROB3 axes — pos byte (0..255) | joint value | range")
+    def set_positions(self, positions: Sequence[int], status: str = "") -> None:
+        rows = ["ROB3 axes — pos byte (0..255) | joint value | range"]
         for ax in AXES:
-            b = positions[ax.index]
-            if b < 0:
-                rows.append(f"{ax.label:16s}   --   (no data)")
+            b = positions[ax.index] if ax.index < len(positions) else -1
+            if b is None or b < 0:
+                # Always emit a row (fixed count) so the in-place redraw stays
+                # aligned, even before the first live reading.
+                rows.append(f"{ax.label:16s} [{'-' * _BAR_W}]  ...  (no data)")
                 continue
             frac = max(0, min(255, b)) / 255.0
             fill = int(frac * _BAR_W)
@@ -47,12 +48,15 @@ class TextViewer:
                 f"{ax.label:16s} [{bar}] {b:3d}  {_fmt_joint(ax, joint)}  "
                 f"({lo} .. {hi})"
             )
-        # Redraw in place: move cursor up over the previous block.
+        rows.append(f"last: {status}" if status else "")   # managed status line
+        # Redraw in place: move the cursor up over exactly the rows we wrote last
+        # time (constant row count), clear + rewrite each.
         if self._primed:
             self._out.write(f"\x1b[{self._lines}A")
         for r in rows:
             self._out.write("\x1b[2K" + r + "\n")
         self._out.flush()
+        self._lines = len(rows)   # always len(AXES)+1, but stay exact
         self._primed = True
 
     def close(self) -> None:

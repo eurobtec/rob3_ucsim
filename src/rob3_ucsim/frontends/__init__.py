@@ -190,12 +190,13 @@ def run(backend: str = "text", *, hex_path: str | None = None, hz: float = 20.0,
             # Apply any queued input intents using the verified cadence (we are
             # the single stepper), then advance the servo and render.
             while not intents.empty():
-                it = intents.get_nowait()
-                last_intent = it
-                print(f"[intent] {it}", file=sys.stderr)
-                drv.apply_intent(it)
+                last_intent = intents.get_nowait()
+                drv.apply_intent(last_intent)
             eng.run_cycles(cycles_per_frame)
-            viewer.set_positions(eng.read_positions())
+            try:
+                viewer.set_positions(eng.read_positions(), status=last_intent)
+            except TypeError:
+                viewer.set_positions(eng.read_positions())   # viewers w/o status
             time.sleep(period)
     except KeyboardInterrupt:
         pass
