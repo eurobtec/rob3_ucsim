@@ -206,7 +206,17 @@ def main() -> int:
     args = ap.parse_args()
 
     if args.intent_port:
-        sock = socket.create_connection((args.host, args.intent_port), timeout=5.0)
+        try:
+            sock = socket.create_connection((args.host, args.intent_port), timeout=5.0)
+        except OSError as e:
+            print(f"ERROR: could not connect to viewer intent socket "
+                  f"{args.host}:{args.intent_port} ({e}).\n"
+                  f"       Start the viewer first:  "
+                  f"rob3-viz --backend text --intent-port {args.intent_port}",
+                  file=sys.stderr)
+            return 2
+        print(f"connected to viewer at {args.host}:{args.intent_port}  "
+              f"(keys drive the firmware; watch the viewer)")
 
         def send(intent):
             sock.sendall((intent + "\n").encode())

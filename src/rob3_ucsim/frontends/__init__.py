@@ -184,11 +184,15 @@ def run(backend: str = "text", *, hex_path: str | None = None, hz: float = 20.0,
                   f"(attach: rob3-teachbox --intent-port {intent_port})",
                   file=sys.stderr)
         period = 1.0 / hz
+        last_intent = ""
         while True:
             # Apply any queued input intents using the verified cadence (we are
             # the single stepper), then advance the servo and render.
             while not intents.empty():
-                drv.apply_intent(intents.get_nowait())
+                it = intents.get_nowait()
+                last_intent = it
+                print(f"[intent] {it}", file=sys.stderr)
+                drv.apply_intent(it)
             eng.run_cycles(cycles_per_frame)
             viewer.set_positions(eng.read_positions())
             time.sleep(period)
