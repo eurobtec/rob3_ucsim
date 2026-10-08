@@ -32,7 +32,7 @@ KEYMAP = {
     "0": ("0", 0, 2), "1": ("1", 1, 2), "2": ("2", 2, 2), "3": ("3", 3, 2),
     "4": ("4", 4, 2), "5": ("5", 5, 2), "6": ("6", 6, 2), "7": ("7", 7, 2),
     "8": ("8", 0, 1), "9": ("9", 1, 1),
-    "+": ("UP/RIGHT", 3, 1), "-": ("DOWN/LEFT", 4, 1),
+    "+": ("UP/+", 4, 2), "-": ("DOWN/-", 3, 2),
     "P": ("POS", 2, 3), "E": ("ENT", 5, 1), "N": ("NOP", 2, 1),
     "D": ("DEL", 7, 1), "C": ("ERR", 6, 1), "R": ("RUN", 7, 3),
     "I": ("INS", 0, 3), "O": ("OUT", 1, 3),
@@ -83,34 +83,23 @@ class TeachboxDriver:
         """Select axis n (0..5) = group 1, row n+1."""
         self.press(n + 1, 1)
 
+    #: Verified jog keys (swept in ucSim): index = row+1+(group-1)*8.
+    #: '+' = row 4 group 2 (index 0x0D); '-' = row 3 group 2 (index 0x0C).
+    JOG_PLUS = (4, 2)
+    JOG_MINUS = (3, 2)
+
     def jog(self, direction):
-        """Jog the selected axis via kh_jog (ACC.0: 0=+ increment, 1=- decrement).
+        """Jog the selected axis by pressing the real +/- keypad key.
 
-        Set ONLY what kh_jog reads — R1 = 0x50+axis (the position slot) and
-        ACC.0 (direction), with PSW on bank 0 — exactly like demo_teachbox_axis.sh.
-        kh_jog itself clamps 0x00..0xFF.
-
-        LIMITATION [INFER]: kh_jog ends by requesting motion (setb 0x2F, arms the
-        watchdog 0x19) so the servo ISR (0x00C0) then drives the motor toward the
-        new slot. Invoking kh_jog by a bare `pc 0x0E26` jump does not reproduce
-        the full teachbox->servo handoff state, so after several repeated jogs the
-        free-running servo can diverge (observed: axis wraps past the clamp, a
-        neighbouring slot zeroed). A single jog is faithful; sustained multi-step
-        jogging needs the key->jog scanner path reverse-engineered (not yet
-        black-box-mapped — see the rob3-firmware-sim skill). Treat live jog as
-        preview-grade for now.
+        direction 0 = '+' (increment), 1 = '-' (decrement). Driven through the
+        full scanner debounce cadence (like axis-select) so the firmware sets up
+        its own servo handoff — verified stable + repeatable in ucSim (no reset,
+        no neighbour corruption), unlike a bare `pc 0x0E26` jump into kh_jog.
         """
         if self.selected is None:
             return
-        self.eng.command("set mem sfr 0xd0 0x00")                       # PSW bank 0
-        self.eng.command("set mem iram 0x01 0x%02x" % (self.POS_SLOT + self.selected))  # R1
-        self.eng.command("set mem sfr 0xe0 0x%02x" % (direction & 1))   # ACC.0 = dir
-        self.eng.command("pc 0x%04x" % self.JOG)
-        for bp in ("0x0e40", "0x0e2f", "0x0e36"):
-            self.eng.command("break %s" % bp)
-        self.eng.run(timeout=10)
-        for bp in ("0x0e40", "0x0e2f", "0x0e36"):
-            self.eng.command("clear %s" % bp)
+        row, group = self.JOG_PLUS if (direction & 1) == 0 else self.JOG_MINUS
+        self.press(row, group)
 
     def apply_intent(self, line: str) -> str:
         """Apply one intent line: 'press R G' | 'axis N' | 'jog +|-'.
