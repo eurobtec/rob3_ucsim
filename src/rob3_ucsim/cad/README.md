@@ -11,7 +11,7 @@ as ROB3):
 
 - Repo: <https://github.com/Fuchsfuchsfuchs/TR5_Roboterarm>, path `3D_CAD/`
 - Note: the upstream model is work in progress — the **gripper and wrist are
-  not modelled** there (`CAD_Information.txt`).
+  not modelled** there.
 
 We vendor our own copy as a neutral **STEP** file (open format, editable in any
 CAD tool). We do **not** keep the Autodesk `.f3z` (Fusion-only, proprietary, and
@@ -24,7 +24,6 @@ ever needs editing in Fusion, it is still available in the upstream repo.
 | :--- | :--------- | :------ |
 | `rob3_arm.step` | neutral CAD of the ARM ONLY (base, tower, upper arm, forearm; no gripper/wrist) | reference / re-export |
 | `rob3_complete.stl` | the FULL assembled robot (arm + wrist + gripper) baked in the default pose | reference / viz / print |
-| `CAD_Information.txt` | upstream note (gripper + wrist missing) | reference |
 | `gripper.py` | **our** parametric gripper CAD (CadQuery), built from bench measurements | generates the files below |
 | `gripper.stl` | gripper, default OPEN pose (STL only; regenerate from gripper.py) | `../urdf/meshes/gripper.stl` |
 | `gripper_open.stl` / `gripper_closed.stl` | gripper open / closed poses | reference / viz |
