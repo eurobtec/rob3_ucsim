@@ -1,96 +1,139 @@
 <?xml version="1.0"?>
-<!-- ROB3 6-axis robot description using the supplied physical dimensions and
-     firmware axis limits:
+<!-- ROB3 6-axis robot description (xacro) - mesh-based, synced to the TR5 3D CAD.
+
+     SOURCE OF TRUTH: the TR5_Roboterarm 3D CAD
+     (github.com/Fuchsfuchsfuchs/TR5_Roboterarm, 3D_CAD/TR5_Modell_V1.*).
+     Lower 3 axes use the CAD meshes + CAD-derived transforms (Fusion 360 export).
+
+     COMPLETENESS GAP (3D_CAD/Information): the CAD is work in progress - the
+     GRIPPER and both WRIST axes are not modelled. wrist_pitch / wrist_roll /
+     gripper here are PRIMITIVE STAND-INS, clearly marked. Replace them with
+     CAD meshes when the 3D model is completed.
+
+     Provenance:  [HW/CAD] base_link, link1(tower), link2(upperarm), link3(forearm)
+                  [INFER]  link4(wrist_pitch), link5(wrist_roll), gripper_link
+
+     Firmware axis order / limits (see axes.py / README) - joint NAMES are the
+     firmware names the viewers look up BY NAME, so they must not change:
        base +80..-80 deg | shoulder +70..-30 | elbow 0..-100
-       wrist pitch +/-100 | wrist roll +/-100 | gripper 0..60 mm (prismatic)
-     Geometry and joint axes are configured for visualization; validate the
-     dimensions and transforms against the physical robot before motion use. -->
+       wrist_pitch +/-100 | wrist_roll +/-100 | gripper 0..60 mm (prismatic)
+
+     This .xacro is kept in sync with rob3.urdf (the plain URDF the sim loads).
+-->
 <robot xmlns:xacro="http://www.ros.org/wiki/xacro" name="rob3">
 
   <xacro:property name="deg" value="0.017453292519943295"/>
 
   <material name="rob3_grey"><color rgba="0.6 0.6 0.62 1"/></material>
   <material name="rob3_blue"><color rgba="0.15 0.35 0.7 1"/></material>
+  <!-- translucent orange flags the CAD-missing stand-in links -->
+  <material name="rob3_standin"><color rgba="0.9 0.45 0.1 0.6"/></material>
 
-  <xacro:macro name="cyl_link" params="name segment_length radius material">
+  <!-- CAD mesh link: visual+collision share one STL at a given origin. -->
+  <xacro:macro name="cad_link" params="name mesh ox oy oz material mass">
     <link name="${name}">
       <visual>
-        <origin xyz="0 0 ${segment_length/2}" rpy="0 0 0"/>
-        <geometry><cylinder length="${segment_length}" radius="${radius}"/></geometry>
+        <origin xyz="${ox} ${oy} ${oz}" rpy="0 0 0"/>
+        <geometry><mesh filename="meshes/${mesh}" scale="0.001 0.001 0.001"/></geometry>
         <material name="${material}"/>
       </visual>
       <collision>
-        <origin xyz="0 0 ${segment_length/2}" rpy="0 0 0"/>
-        <geometry><cylinder length="${segment_length}" radius="${radius}"/></geometry>
+        <origin xyz="${ox} ${oy} ${oz}" rpy="0 0 0"/>
+        <geometry><mesh filename="meshes/${mesh}" scale="0.001 0.001 0.001"/></geometry>
       </collision>
       <inertial>
-        <mass value="0.2"/>
+        <mass value="${mass}"/>
         <inertia ixx="1e-3" ixy="0" ixz="0" iyy="1e-3" iyz="0" izz="1e-3"/>
       </inertial>
     </link>
   </xacro:macro>
 
-  <!-- Base Link: height 190 mm, width 120 mm, length 200 mm -->
-  <link name="base_link">
-    <visual>
-      <origin xyz="0 0 0.095" rpy="0 0 0"/>
-      <geometry><box size="0.20 0.12 0.190"/></geometry>
-      <material name="rob3_grey"/>
-    </visual>
-  </link>
+  <!-- CAD-missing stand-in (primitive cylinder, oriented along local +X). -->
+  <xacro:macro name="standin_cyl" params="name length radius mass">
+    <link name="${name}">
+      <visual>
+        <origin xyz="${length/2} 0 0" rpy="0 ${pi/2} 0"/>
+        <geometry><cylinder length="${length}" radius="${radius}"/></geometry>
+        <material name="rob3_standin"/>
+      </visual>
+      <collision>
+        <origin xyz="${length/2} 0 0" rpy="0 ${pi/2} 0"/>
+        <geometry><cylinder length="${length}" radius="${radius}"/></geometry>
+      </collision>
+      <inertial>
+        <mass value="${mass}"/>
+        <inertia ixx="1e-4" ixy="0" ixz="0" iyy="1e-4" iyz="0" izz="1e-4"/>
+      </inertial>
+    </link>
+  </xacro:macro>
 
-  <xacro:cyl_link name="link1" segment_length="0.20" radius="0.03" material="rob3_blue"/>
-  <xacro:cyl_link name="link2" segment_length="0.13" radius="0.025" material="rob3_grey"/>
-  <xacro:cyl_link name="link3" segment_length="0.05" radius="0.022" material="rob3_blue"/>
-  <xacro:cyl_link name="link4" segment_length="0.04" radius="0.02"  material="rob3_grey"/>
-  <xacro:cyl_link name="link5" segment_length="0.02" radius="0.018" material="rob3_blue"/>
+  <!-- ============ CAD links (source of truth) ============ -->
+  <xacro:cad_link name="base_link" mesh="base_link.stl" ox="0"      oy="0"     oz="0"    material="rob3_grey" mass="20.36"/>
+  <xacro:cad_link name="link1"     mesh="tower.stl"     ox="0.035"  oy="0"     oz="-0.1" material="rob3_blue" mass="2.5676"/>
+  <xacro:cad_link name="link2"     mesh="upperarm.stl"  ox="0.035"  oy="0.052" oz="-0.3" material="rob3_grey" mass="0.8917"/>
+  <xacro:cad_link name="link3"     mesh="forearm.stl"   ox="-0.165" oy="0.033" oz="-0.3" material="rob3_blue" mass="0.2256"/>
+
+  <!-- ============ CAD-MISSING stand-ins [INFER] ============ -->
+  <xacro:standin_cyl name="link4" length="0.04" radius="0.02"  mass="0.1"/>
+  <xacro:standin_cyl name="link5" length="0.04" radius="0.016" mass="0.08"/>
   <link name="gripper_link">
     <visual>
-      <origin xyz="0 0 0.01" rpy="0 0 0"/>
-      <geometry><box size="0.03 0.05 0.02"/></geometry>
-      <material name="rob3_grey"/>
+      <origin xyz="0.015 0 0" rpy="0 0 0"/>
+      <geometry><box size="0.03 0.06 0.03"/></geometry>
+      <material name="rob3_standin"/>
     </visual>
+    <collision>
+      <origin xyz="0.015 0 0" rpy="0 0 0"/>
+      <geometry><box size="0.03 0.06 0.03"/></geometry>
+    </collision>
+    <inertial>
+      <mass value="0.05"/>
+      <inertia ixx="1e-4" ixy="0" ixz="0" iyy="1e-4" iyz="0" izz="1e-4"/>
+    </inertial>
   </link>
 
-  <!-- Axis 0: base rotation (q1) +80..-80 deg -->
+  <!-- ============ Joints ============ -->
+
+  <!-- Axis 0: base rotation (q1) +80..-80 deg  [CAD "Umdrehung 14", axis Z] -->
   <joint name="base" type="revolute">
     <parent link="base_link"/><child link="link1"/>
-    <origin xyz="0 0 0.190" rpy="0 0 0"/><axis xyz="0 0 1"/>
+    <origin xyz="-0.035 0 0.1" rpy="0 0 0"/><axis xyz="0 0 1"/>
     <limit lower="${-80*deg}" upper="${80*deg}" effort="10" velocity="1.0"/>
   </joint>
 
-  <!-- Axis 1: shoulder (q2) +70..-30 deg -->
+  <!-- Axis 1: shoulder (q2) +70..-30 deg  [CAD "Gelenk 2", axis Y] -->
   <joint name="shoulder" type="revolute">
     <parent link="link1"/><child link="link2"/>
-    <origin xyz="0 0 0.20" rpy="0 0 0"/><axis xyz="0 1 0"/>
+    <origin xyz="0 -0.052 0.2" rpy="0 0 0"/><axis xyz="0 1 0"/>
     <limit lower="${-30*deg}" upper="${70*deg}" effort="10" velocity="1.0"/>
   </joint>
 
-  <!-- Axis 2: elbow (q3) 0..-100 deg -->
+  <!-- Axis 2: elbow (q3) 0..-100 deg  [CAD "Gelenk 3", axis Y] -->
   <joint name="elbow" type="revolute">
     <parent link="link2"/><child link="link3"/>
-    <origin xyz="0 0 0.13" rpy="0 0 0"/><axis xyz="0 1 0"/>
+    <origin xyz="0.2 0.019 0" rpy="0 0 0"/><axis xyz="0 1 0"/>
     <limit lower="${-100*deg}" upper="0" effort="8" velocity="1.0"/>
   </joint>
 
-  <!-- Axis 3: wrist pitch (q4) +/-100 deg -->
+  <!-- Axis 3: wrist pitch (q4) +/-100 deg  [STAND-IN: not in CAD].
+       Attached at the forearm tip (link3 frame x~=0.148, y~=0.033). -->
   <joint name="wrist_pitch" type="revolute">
     <parent link="link3"/><child link="link4"/>
-    <origin xyz="0 0 0.05" rpy="0 0 0"/><axis xyz="0 1 0"/>
+    <origin xyz="0.148 0.033 0" rpy="0 0 0"/><axis xyz="0 1 0"/>
     <limit lower="${-100*deg}" upper="${100*deg}" effort="5" velocity="1.5"/>
   </joint>
 
-  <!-- Axis 4: wrist roll (q5) +/-100 deg -->
+  <!-- Axis 4: wrist roll (q5) +/-100 deg  [STAND-IN: not in CAD] -->
   <joint name="wrist_roll" type="revolute">
     <parent link="link4"/><child link="link5"/>
-    <origin xyz="0 0 0.04" rpy="0 0 0"/><axis xyz="0 0 1"/>
+    <origin xyz="0.04 0 0" rpy="0 0 0"/><axis xyz="1 0 0"/>
     <limit lower="${-100*deg}" upper="${100*deg}" effort="5" velocity="1.5"/>
   </joint>
 
-  <!-- Axis 5: gripper linear opening 0..60 mm (prismatic) -->
+  <!-- Axis 5: gripper linear opening 0..60 mm (prismatic)  [STAND-IN: not in CAD] -->
   <joint name="gripper" type="prismatic">
     <parent link="link5"/><child link="gripper_link"/>
-    <origin xyz="0 0 0.02" rpy="0 0 0"/><axis xyz="1 0 0"/>
+    <origin xyz="0.04 0 0" rpy="0 0 0"/><axis xyz="0 1 0"/>
     <limit lower="0.0" upper="0.060" effort="20" velocity="0.05"/>
   </joint>
 
